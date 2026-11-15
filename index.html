@@ -1,0 +1,1879 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>ASHAPOWER Smart Connect | Industrial SMU Control</title>
+  <meta name="description" content="Production Industrial MPPT Solar Management Unit Controller with Persistent Telemetry, Fail-Safe Watchdog and Cross-Platform Capacitor/PWA Support">
+  <meta name="theme-color" content="#070C18">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%23070C18'/><path d='M50 15 L56 38 L80 40 L60 54 L68 78 L50 64 L32 78 L40 54 L20 40 L44 38 Z' fill='%23F59E0B'/><path d='M44 48 L56 30 L52 50 L64 50 L42 74 L46 54 Z' fill='%2306B6D4'/></svg>">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            industrial: {
+              950: '#040711',
+              900: '#070C18',
+              850: '#0B132B',
+              800: '#111B38',
+              750: '#152144',
+              700: '#1C2B54',
+              600: '#2A3F78',
+              500: '#3D5A9C'
+            },
+            solar: {
+              400: '#FBBF24',
+              500: '#F59E0B',
+              600: '#D97706'
+            },
+            batt: {
+              400: '#34D399',
+              500: '#10B981',
+              600: '#059669'
+            },
+            neon: {
+              cyan: '#06B6D4',
+              amber: '#F59E0B',
+              emerald: '#10B981',
+              violet: '#8B5CF6',
+              rose: '#F43F5E'
+            }
+          },
+          fontFamily: {
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    /* Mobile-first touch & safe-area handling */
+    :root {
+      --sat: env(safe-area-inset-top, 0px);
+      --sab: env(safe-area-inset-bottom, 0px);
+      --sal: env(safe-area-inset-left, 0px);
+      --sar: env(safe-area-inset-right, 0px);
+    }
+    html, body {
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+      overscroll-behavior-y: none;
+      height: 100%;
+    }
+    input, select, textarea {
+      user-select: auto;
+      -webkit-user-select: auto;
+    }
+    .safe-top { padding-top: max(var(--sat), 8px); }
+    .safe-bottom { padding-bottom: max(var(--sab), 16px); }
+    .safe-nav-bottom { padding-bottom: max(var(--sab), 8px); }
+
+    /* Custom industrial scrollbars */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #070C18; }
+    ::-webkit-scrollbar-thumb { background: #1C2B54; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3D5A9C; }
+
+    /* Energy vector dash animations */
+    @keyframes flowDashes {
+      to { stroke-dashoffset: -32; }
+    }
+    .flow-active {
+      stroke-dasharray: 6 5;
+      animation: flowDashes 1.2s linear infinite;
+    }
+    .flow-fast {
+      stroke-dasharray: 6 5;
+      animation: flowDashes 0.6s linear infinite;
+    }
+
+    /* Stale telemetry visual state */
+    .telemetry-stale {
+      opacity: 0.45;
+      filter: grayscale(40%) blur(0.4px);
+      transition: all 0.3s ease;
+    }
+
+    /* Laser scan animation for dev/demo drawer */
+    @keyframes laserScan {
+      0% { top: 0%; opacity: 0.3; }
+      50% { opacity: 1; }
+      100% { top: 95%; opacity: 0.3; }
+    }
+    .scanner-beam {
+      position: absolute;
+      left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, #06B6D4, #F59E0B, transparent);
+      box-shadow: 0 0 10px #06B6D4;
+      animation: laserScan 1.6s ease-in-out infinite alternate;
+    }
+  </style>
+</head>
+
+<body class="bg-industrial-950 text-slate-100 flex flex-col font-sans antialiased overflow-hidden select-none">
+
+  <!-- =========================================================================
+       GLOBAL APP WRAPPER (HEADER + TABS + BOTTOM NAV + SIDEBAR + MODALS)
+       ========================================================================= -->
+  <div class="flex flex-col h-full w-full relative">
+
+    <!-- GLOBAL TOAST NOTIFICATION CONTAINER -->
+    <div id="toastContainer" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center space-y-2 pointer-events-none w-full max-w-sm px-4"></div>
+
+    <!-- RECONNECTING / WATCHDOG WARNING BANNER -->
+    <div id="watchdogBanner" class="hidden bg-rose-600/90 text-white text-xs px-4 py-1.5 flex items-center justify-between z-30 font-mono shadow-md backdrop-blur-sm">
+      <div class="flex items-center space-x-2">
+        <span class="w-2 h-2 rounded-full bg-white animate-ping"></span>
+        <span id="watchdogText">Telemetry Watchdog: Link Offline (Reconnecting...)</span>
+      </div>
+      <button onclick="reconnectWebSocketNow()" class="text-[11px] bg-rose-800 hover:bg-rose-700 px-2 py-0.5 rounded font-sans font-bold">Retry</button>
+    </div>
+
+    <!-- TOP HEADER BAR -->
+    <header class="bg-industrial-900 border-b border-industrial-800 safe-top px-3 sm:px-5 py-2.5 z-20 flex-shrink-0">
+      <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
+        
+        <!-- Hamburger Drawer Button & App Title -->
+        <div class="flex items-center space-x-3">
+          <button id="btnOpenSidebar" onclick="toggleSidebar(true)" aria-label="Open Navigation Menu"
+                  class="w-9 h-9 rounded-lg bg-industrial-850 hover:bg-industrial-800 border border-industrial-700 flex items-center justify-center text-slate-300 hover:text-white transition-colors active:scale-95">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+
+          <div>
+            <div class="flex items-center space-x-2">
+              <h1 class="font-black text-sm sm:text-base tracking-tight text-white flex items-center gap-1.5">
+                <span>ASHAPOWER</span>
+                <span class="text-amber-400 font-extrabold text-[11px] px-1.5 py-0.2 rounded bg-amber-400/10 border border-amber-400/30">Smart Connect</span>
+              </h1>
+              <span id="headerModelBadge" class="hidden sm:inline-block font-mono text-[10px] text-cyan-400 bg-industrial-950 px-2 py-0.5 rounded border border-cyan-800/60">
+                SURYA-50 (12V/24V)
+              </span>
+            </div>
+            <p class="text-[10px] text-slate-400 flex items-center space-x-1.5 font-mono">
+              <span id="headerDeviceSN">Controller: Not identified</span>
+              <span class="text-slate-600">•</span>
+              <span id="headerSyncTime">Synced</span>
+            </p>
+          </div>
+        </div>
+
+        <!-- Connection Status & Quick Action Pill -->
+        <div class="flex items-center space-x-2">
+          <button id="btnHeaderConnect" onclick="toggleQuickConnect()" 
+                  class="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-industrial-850 border border-industrial-700 text-slate-400 font-mono text-xs hover:border-slate-500 transition-all">
+            <span id="headerStatusDot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+            <span id="headerStatusText">DISCONNECTED</span>
+          </button>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- =========================================================================
+         MAIN TAB CONTENT AREA (SCROLLABLE CONTAINER)
+         ========================================================================= -->
+    <main class="flex-1 overflow-y-auto overflow-x-hidden relative" style="padding-bottom: calc(72px + var(--sab));">
+      
+      <!-- TAB 1: HOME (REAL-TIME TELEMETRY & POWER FLOW) -->
+      <section id="tabContentHome" class="max-w-7xl mx-auto p-3 sm:p-5 space-y-4">
+        
+        <!-- Live System Overview Header Card -->
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center space-x-3">
+            <div id="systemHealthIcon" class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div>
+              <div class="flex items-center space-x-2">
+                <span class="text-xs font-bold text-white uppercase tracking-wide">System Operational</span>
+                <span id="badgeActiveStage" class="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold">
+                  MPPT_BULK
+                </span>
+              </div>
+              <p class="text-[11px] text-slate-400 font-mono">
+                Relay: <span id="badgeActiveGrid" class="text-slate-400 font-semibold">—</span> • Buck PWM: <span id="telemetryPwmDuty">—</span>
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-center space-x-2 text-xs font-mono">
+            <span class="text-slate-500">Stream:</span>
+            <span id="telemetryRxRate" class="text-emerald-400 font-bold">0.0 Hz</span>
+          </div>
+        </div>
+
+        <!-- 6 PRIMARY KPI CARDS -->
+        <div id="telemetryGrid" class="grid grid-cols-2 lg:grid-cols-6 gap-3">
+          
+          <!-- KPI 1: Solar Harvest Watts -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-400 block mb-0.5">SOLAR POWER</span>
+            <div class="flex items-baseline space-x-1">
+              <span id="valSolarWatts" class="text-2xl sm:text-3xl font-black font-mono text-amber-400">0</span>
+              <span class="text-xs text-amber-300 font-bold">W</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 flex justify-between font-mono">
+              <span><span id="valPvVolts">0.0</span> V</span>
+              <span><span id="valPvAmps">0.0</span> A</span>
+            </div>
+          </div>
+
+          <!-- KPI 2: Battery Voltage & Comp -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-400 block mb-0.5">BATTERY VOLTS</span>
+            <div class="flex items-baseline space-x-1">
+              <span id="valBattComp" class="text-2xl sm:text-3xl font-black font-mono text-emerald-400">—</span>
+              <span class="text-xs text-emerald-300 font-bold">V</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 flex justify-between font-mono">
+              <span>Meas: <span id="valBattMeas">—</span>V</span>
+              <span class="text-cyan-400">ΔV: <span id="valDeltaV">0.00</span>V</span>
+            </div>
+          </div>
+
+          <!-- KPI 3: Charge Current & Direction -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-400 block mb-0.5">NET AMPS</span>
+            <div class="flex items-baseline space-x-1">
+              <span id="valBattAmps" class="text-2xl sm:text-3xl font-black font-mono text-cyan-400">0.0</span>
+              <span class="text-xs text-cyan-300 font-bold">A</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 flex justify-between font-mono">
+              <span>State:</span>
+              <span id="valBattDirection" class="text-slate-300">Standby</span>
+            </div>
+          </div>
+
+          <!-- KPI 4: Battery SoC % -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-400 block mb-0.5">BATTERY SOC</span>
+            <div class="flex items-baseline space-x-1">
+              <span id="valBattSoc" class="text-2xl sm:text-3xl font-black font-mono text-emerald-400">—</span>
+              <span class="text-xs text-emerald-300 font-bold">%</span>
+            </div>
+            <div class="w-full bg-industrial-950 h-1.5 rounded-full overflow-hidden mt-2">
+              <div id="barBattSoc" class="bg-gradient-to-r from-amber-500 to-emerald-500 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <!-- KPI 5: Daily Solar Generated -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-400 block mb-0.5">TODAY GENERATED</span>
+            <div class="flex items-baseline space-x-1">
+              <span id="valKwhGen" class="text-2xl sm:text-3xl font-black font-mono text-solar-400">—</span>
+              <span class="text-xs text-solar-300 font-bold">kWh</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 flex justify-between font-mono">
+              <span>Peak Today:</span>
+              <span id="valTodayPeakW" class="text-amber-300">452W</span>
+            </div>
+          </div>
+
+          <!-- KPI 6: Units Consumed & Margin -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-400 block mb-0.5">TODAY CONSUMED</span>
+            <div class="flex items-baseline space-x-1">
+              <span id="valKwhCons" class="text-2xl sm:text-3xl font-black font-mono text-violet-400">—</span>
+              <span class="text-xs text-violet-300 font-bold">kWh</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 flex justify-between font-mono">
+              <span>Solar Surplus:</span>
+              <span id="valNetSurplus" class="text-emerald-400 font-bold">+1.65 kWh</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3"><div class="text-[11px] text-slate-400">PV POWER TO LOAD</div><div class="text-2xl font-black text-emerald-400"><span id="valPvToLoad">0</span> W</div></div>
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3"><div class="text-[11px] text-slate-400">ESTIMATED GRID COST AVOIDED</div><div class="text-2xl font-black text-amber-300">₹<span id="valGridSavings">0.00</span></div><div class="text-[10px] text-slate-500">Since simulator session · tariff based</div></div>
+        </div>
+
+        <!-- REAL-TIME VECTOR POWER-FLOW SCHEMATIC -->
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm relative overflow-hidden">
+          <div class="flex items-center justify-between mb-2 border-b border-industrial-800/80 pb-2">
+            <h2 class="text-xs font-bold text-white tracking-wide uppercase flex items-center gap-1.5">
+              <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              Real-Time Energy Vector Flow
+            </h2>
+            <span id="flowActivityBadge" class="text-[11px] text-slate-400 font-mono">Live SMU State</span>
+          </div>
+
+          <div class="w-full overflow-x-auto py-1">
+            <svg viewBox="0 0 900 220" class="w-full min-w-[650px] h-auto select-none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Flow Wires -->
+              <path d="M150 110 L270 110" stroke="#1E293B" stroke-width="5" stroke-linecap="round" />
+              <path id="svgWirePv" d="M150 110 L270 110" stroke="#F59E0B" stroke-width="3" stroke-linecap="round" class="opacity-20" />
+
+              <path d="M430 110 L550 110" stroke="#1E293B" stroke-width="5" stroke-linecap="round" />
+              <path id="svgWireBatt" d="M430 110 L550 110" stroke="#10B981" stroke-width="3" stroke-linecap="round" class="opacity-20" />
+
+              <path d="M670 110 L770 110" stroke="#1E293B" stroke-width="5" stroke-linecap="round" />
+              <path id="svgWireLoad" d="M670 110 L770 110" stroke="#8B5CF6" stroke-width="3" stroke-linecap="round" class="flow-active" />
+
+              <!-- Grid Bypass Arc -->
+              <path d="M350 65 L350 35 L700 35 L700 65" fill="none" stroke="#1E293B" stroke-width="4" stroke-dasharray="5 4" />
+              <path id="svgWireGrid" d="M350 65 L350 35 L700 35 L700 65" fill="none" stroke="#EF4444" stroke-width="3" stroke-dasharray="5 4" class="opacity-10" />
+
+              <!-- NODE 1: SOLAR PV ARRAY -->
+              <g transform="translate(30, 50)">
+                <rect width="120" height="120" rx="12" fill="#0B132B" stroke="#F59E0B" stroke-width="1.8"/>
+                <text x="60" y="30" text-anchor="middle" fill="#FBBF24" font-size="11" font-weight="bold">SOLAR PV</text>
+                <text id="svgPvW" x="60" y="65" text-anchor="middle" fill="#FFFFFF" font-size="16" font-weight="900" font-family="monospace">0 W</text>
+                <text id="svgPvVI" x="60" y="88" text-anchor="middle" fill="#FCD34D" font-size="11" font-family="monospace">0.0V 0.0A</text>
+              </g>
+
+              <!-- NODE 2: SURYA MPPT BUCK STAGE -->
+              <g transform="translate(270, 40)">
+                <rect width="160" height="140" rx="14" fill="#0B132B" stroke="#06B6D4" stroke-width="2"/>
+                <text x="80" y="30" text-anchor="middle" fill="#38BDF8" font-size="13" font-weight="900">ASHAPOWER SMU</text>
+                <text x="80" y="70" text-anchor="middle" fill="#94A3B8" font-size="10">Global MPPT Buck</text>
+                <text id="svgSmuDuty" x="80" y="92" text-anchor="middle" fill="#06B6D4" font-size="15" font-weight="bold" font-family="monospace">PWM: 0%</text>
+                <rect x="20" y="110" width="120" height="18" rx="4" fill="#070C18"/>
+                <text id="svgSmuState" x="80" y="123" text-anchor="middle" fill="#F59E0B" font-size="10" font-weight="bold" font-family="monospace">NO DATA</text>
+              </g>
+
+              <!-- NODE 3: BATTERY BANK -->
+              <g transform="translate(550, 50)">
+                <rect width="120" height="120" rx="12" fill="#0B132B" stroke="#10B981" stroke-width="1.8"/>
+                <text x="60" y="30" text-anchor="middle" fill="#34D399" font-size="11" font-weight="bold">BATTERY BANK</text>
+                <text id="svgBattV" x="60" y="65" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="900" font-family="monospace">— V</text>
+                <text id="svgBattI" x="60" y="88" text-anchor="middle" fill="#6EE7B7" font-size="11" font-family="monospace">0.0 A</text>
+              </g>
+
+              <!-- NODE 4: HOME INVERTER LOADS -->
+              <g transform="translate(770, 50)">
+                <rect width="110" height="120" rx="12" fill="#0B132B" stroke="#8B5CF6" stroke-width="1.8"/>
+                <text x="55" y="30" text-anchor="middle" fill="#C4B5FD" font-size="11" font-weight="bold">HOME INVERTER</text>
+                <text id="svgLoadW" x="55" y="65" text-anchor="middle" fill="#FFFFFF" font-size="15" font-weight="bold" font-family="monospace">-- W</text>
+                <text x="55" y="88" text-anchor="middle" fill="#A78BFA" font-size="10">Load Demand</text>
+              </g>
+
+              <!-- GRID STATUS PILL OVERLAY -->
+              <g transform="translate(480, 20)">
+                <rect x="-65" y="-10" width="130" height="20" rx="10" fill="#070C18" stroke="#1E293B" stroke-width="1"/>
+                <circle id="svgGridCircle" cx="-50" cy="0" r="3.5" fill="#10B981"/>
+                <text id="svgGridText" x="6" y="3.5" text-anchor="middle" fill="#E2E8F0" font-size="9" font-weight="bold">GRID: ISOLATED</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <!-- ROLLING 60-POINT TELEMETRY CHART (MEMORY CAPPED) -->
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+              <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+              Live Telemetry Trends (Latest 60s)
+            </h3>
+            <span class="text-[10px] font-mono text-slate-500">Ring-buffer capped: 60 pts</span>
+          </div>
+          <div class="h-48 w-full">
+            <canvas id="homeLiveChart"></canvas>
+          </div>
+        </div>
+
+        <!-- ENERGY INTELLIGENCE: derived only from validated live controller telemetry -->
+        <section id="energyIntelligence" class="bg-industrial-900 rounded-xl border border-cyan-900/50 p-4 space-y-3">
+          <div class="flex items-center justify-between"><div><h2 class="text-sm font-black text-white">Energy Intelligence</h2><p class="text-[10px] text-slate-400">Explainable diagnostics · advisory only · no autonomous safety actions</p></div><span id="eiDataState" class="text-[10px] font-mono text-amber-300">WAITING FOR LIVE DATA</span></div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div class="rounded-lg bg-industrial-950 p-3"><div class="text-[10px] text-slate-400">PV trend (5 min)</div><div id="eiPvForecast" class="text-lg font-bold text-cyan-300">—</div><div class="text-[10px] text-slate-500">Linear trend estimate</div></div>
+            <div class="rounded-lg bg-industrial-950 p-3"><div class="text-[10px] text-slate-400">Power balance</div><div id="eiBalance" class="text-lg font-bold text-white">—</div><div class="text-[10px] text-slate-500">Cumulative generated / consumed</div></div>
+            <div class="rounded-lg bg-industrial-950 p-3"><div class="text-[10px] text-slate-400">Data quality</div><div id="eiQuality" class="text-lg font-bold text-white">—</div><div class="text-[10px] text-slate-500">Range + freshness checks</div></div>
+            <div class="rounded-lg bg-industrial-950 p-3"><div class="text-[10px] text-slate-400">Anomaly score</div><div id="eiAnomaly" class="text-lg font-bold text-white">—</div><div class="text-[10px] text-slate-500">Robust rolling deviation</div></div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-2"><div class="rounded-lg bg-industrial-950 p-3"><h3 class="text-xs font-bold text-white mb-2">Explainable alerts</h3><div id="eiAlerts" class="text-xs text-slate-400">No validated telemetry yet. Alerts will appear only after live samples are received.</div></div><div class="rounded-lg bg-industrial-950 p-3"><h3 class="text-xs font-bold text-white mb-2">Energy optimization advice</h3><div id="eiAdvice" class="text-xs text-slate-400">Waiting for PV and load measurements. Recommendations are advisory and never change controller setpoints.</div></div></div>
+          <p class="text-[10px] text-slate-500">Forecasts and anomaly indicators are screening tools, not certified protection or battery-state estimators. Missing/stale data suppresses predictions.</p>
+        </section>
+      </section>
+
+      <!-- TAB 2: HISTORY (INDEXEDDB LOGS, BAR CHARTS & CSV EXPORT) -->
+      <section id="tabContentHistory" class="hidden max-w-7xl mx-auto p-3 sm:p-5 space-y-4">
+        
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+              <span>Historical Solar Logs</span>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Controller History</span>
+            </h2>
+            <p class="text-xs text-slate-400">Server-side 5-minute energy records; 30-day analytics.</p>
+          </div>
+
+          <div class="flex items-center space-x-2">
+            <!-- 7-Day vs 30-Day Toggle -->
+            <div class="inline-flex rounded-lg p-0.5 bg-industrial-950 border border-industrial-700 text-xs">
+              <button id="btnHistory7d" onclick="switchHistoryRange(7)" class="px-2.5 py-1 rounded font-bold bg-industrial-700 text-amber-300">
+                7 Days
+              </button>
+              <button id="btnHistory30d" onclick="switchHistoryRange(30)" class="px-2.5 py-1 rounded font-bold text-slate-400 hover:text-white">
+                30 Days
+              </button>
+            </div>
+
+            <!-- Download CSV Report Button -->
+            <button onclick="exportHistoryCsv()" 
+                    class="bg-cyan-600 hover:bg-cyan-500 text-industrial-950 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all active:scale-95">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              <span>Download CSV</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- DAILY KWH GENERATED VS CONSUMED BAR CHART -->
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm space-y-2">
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-bold text-white uppercase tracking-wider">Daily Energy Harvest vs. Load (kWh)</h3>
+            <span id="historyBarSubtext" class="text-[11px] font-mono text-slate-400">Showing last 7 days</span>
+          </div>
+          <div class="h-64 w-full">
+            <canvas id="historyBarChart"></canvas>
+          </div>
+        </div>
+
+        <!-- HISTORICAL SNAPSHOTS TABLE -->
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-bold text-white uppercase tracking-wider">Recent Telemetry Snapshots</h3>
+            <span id="historyRecordCount" class="text-[11px] font-mono text-slate-400">0 logs in database</span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left font-mono text-xs border-collapse">
+              <thead>
+                <tr class="border-b border-industrial-800 text-[11px] text-slate-400 uppercase">
+                  <th class="py-2 px-2.5">Timestamp</th>
+                  <th class="py-2 px-2.5">Solar (W)</th>
+                  <th class="py-2 px-2.5">PV V / I</th>
+                  <th class="py-2 px-2.5">Battery V</th>
+                  <th class="py-2 px-2.5">Charge A</th>
+                  <th class="py-2 px-2.5">Gen kWh</th>
+                  <th class="py-2 px-2.5">Cons kWh</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody" class="divide-y divide-industrial-800/60 text-slate-200">
+                <tr><td colspan="7" class="py-4 text-center text-slate-500 font-sans text-xs">No server history yet. Connect to the laptop virtual controller.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- TAB 3: SETTINGS (HARDWARE CONFIGURATION & CONFIRMATION MODAL) -->
+      <section id="tabContentSettings" class="hidden max-w-7xl mx-auto p-3 sm:p-5 space-y-4">
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-4 space-y-3">
+          <div><h3 class="text-sm font-bold text-white">Electricity tariff</h3><p class="text-xs text-slate-400">Used to estimate avoided grid-energy cost. Set your applicable tariff.</p></div>
+          <div class="flex gap-2 items-center"><input id="tariffInput" type="number" min="0" max="100" step="0.01" value="8" class="w-32 bg-industrial-950 border border-industrial-700 rounded-lg px-3 py-2 text-white text-sm"><span class="text-xs text-slate-400">₹ / kWh</span><button onclick="saveTariff()" class="bg-amber-500 text-industrial-950 font-bold rounded-lg px-4 py-2 text-xs">Save tariff</button></div>
+          <p id="tariffStatus" class="text-xs text-slate-500">Savings are estimated against grid energy displaced by PV. Validate against actual utility metering before financial claims.</p>
+        </div>
+        
+        <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-3 sm:p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+              <span>Virtual controller configuration scope</span>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">HOST SIMULATOR</span>
+            </h2>
+            <p class="text-xs text-slate-400">This demo does not write dsPIC EEPROM or apply battery charging profiles. Only tariff and explicitly supported simulation commands are accepted.</p>
+          </div>
+
+
+        </div>
+
+        <!-- Hardware-only controls are intentionally hidden in the host simulator build. -->
+        <div class="hidden grid grid-cols-1 md:grid-cols-2 gap-4">
+          
+          <!-- Card 1: Battery Chemistry Profile -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-4 shadow-sm space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-bold text-white uppercase tracking-wider">Battery Chemistry</h3>
+              <span class="text-[10px] font-mono text-cyan-400">#CMD,BATT_TYPE,x*</span>
+            </div>
+            <select id="cfgBattType" onchange="onBatteryChemistryChanged(this.value)" 
+                    class="w-full bg-industrial-950 border border-industrial-700 rounded-lg px-3 py-2 text-xs text-white font-medium focus:border-amber-400 focus:outline-none">
+              <option value="0">0: Tubular Lead-Acid (Boost: 14.6V / Eq: 15.2V)</option>
+              <option value="1">1: LiFePO4 Lithium (Boost: 14.4V / Eq: DISABLED)</option>
+              <option value="2">2: SMF / AGM Sealed (Boost: 14.2V / Eq: 14.6V)</option>
+            </select>
+            <div id="cfgEqNotice" class="text-[11px] p-2.5 rounded bg-industrial-950 border border-industrial-800 text-slate-300">
+              <span class="text-emerald-400 font-semibold">• Equalization Allowed:</span> Periodic 15.2V desulfation enabled for tubular cells.
+            </div>
+          </div>
+
+          <!-- Card 2: Max Charging Current (Amps) -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-4 shadow-sm space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-bold text-white uppercase tracking-wider">Max Charging Current Limit</h3>
+              <span id="dispCfgMaxAmps" class="font-mono text-xs font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">45 A</span>
+            </div>
+            <input id="sliderCfgMaxAmps" type="range" min="10" max="50" step="1" value="45" oninput="onMaxAmpsSliderInput(this.value)" 
+                   class="w-full accent-amber-400 cursor-pointer">
+            <div class="flex justify-between text-[10px] font-mono text-slate-500">
+              <span>10 A (Safe Overnight)</span>
+              <span>Hardware Limit</span>
+              <span>50 A (Full Array)</span>
+            </div>
+          </div>
+
+          <!-- Card 3: Low-Voltage Grid Cutoff (LVD) & Solar Reconnect -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-4 shadow-sm space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-bold text-white uppercase tracking-wider">Grid Fallback & Reconnect Cutoffs</h3>
+              <span class="text-[10px] font-mono text-rose-400">#CMD,LVD_CUT,xx.x*</span>
+            </div>
+            
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-400">Low-Voltage Cutoff (LVD):</span>
+                <span id="dispCfgLvd" class="font-mono font-bold text-rose-400">11.2 V</span>
+              </div>
+              <input id="sliderCfgLvd" type="range" min="10.5" max="12.5" step="0.1" value="11.2" oninput="onLvdSliderInput(this.value)" 
+                     class="w-full accent-rose-400 cursor-pointer">
+            </div>
+
+            <div class="pt-2 border-t border-industrial-800">
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-400">Solar Reconnect Threshold:</span>
+                <span id="dispCfgReconnect" class="font-mono font-bold text-emerald-400">12.5 V</span>
+              </div>
+              <input id="sliderCfgReconnect" type="range" min="11.8" max="13.8" step="0.1" value="12.5" oninput="onReconnectSliderInput(this.value)" 
+                     class="w-full accent-emerald-400 cursor-pointer">
+            </div>
+          </div>
+
+          <!-- Card 4: Dynamic IR-Compensation & Grid Bypass -->
+          <div class="bg-industrial-900 rounded-xl border border-industrial-800 p-4 shadow-sm space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-xs font-bold text-white uppercase tracking-wider">Dynamic IR-Drop Surge Guard</h3>
+                <p class="text-[11px] text-slate-400">Compensates motor inrush sag (V + I*R).</p>
+              </div>
+              <input id="toggleCfgIrComp" type="checkbox" checked onchange="onIrCompToggle(this.checked)" class="accent-emerald-500 w-5 h-5 cursor-pointer">
+            </div>
+
+            <div class="pt-2">
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-400">Internal Cable Resistance:</span>
+                <span id="dispCfgRint" class="font-mono font-bold text-cyan-400">15 mΩ</span>
+              </div>
+              <input id="sliderCfgRint" type="range" min="5" max="30" step="1" value="15" oninput="onRintSliderInput(this.value)" 
+                     class="w-full accent-cyan-400 cursor-pointer">
+            </div>
+
+            <div class="pt-2 border-t border-industrial-800 flex items-center justify-between">
+              <span class="text-xs text-slate-300">Manual Relay Force:</span>
+              <button id="btnCfgGridForce" onclick="toggleManualGridForce()" class="px-3 py-1 rounded text-xs font-bold bg-industrial-950 border border-industrial-700 text-slate-300">
+                Auto Solar
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+      </section>
+
+    </main>
+
+    <!-- =========================================================================
+         BOTTOM TAB NAVIGATION BAR (FIXED FOR IOS & ANDROID)
+         ========================================================================= -->
+    <nav class="bg-industrial-900 border-t border-industrial-800 fixed bottom-0 left-0 right-0 z-30 safe-nav-bottom">
+      <div class="max-w-md mx-auto grid grid-cols-3 h-14">
+        
+        <!-- Tab 1: Home Button -->
+        <button id="navBtnHome" onclick="switchMainTab('home')" 
+                class="flex flex-col items-center justify-center space-y-0.5 text-amber-400 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+          <span class="text-[10px] font-bold">Home</span>
+        </button>
+
+        <!-- Tab 2: History Button -->
+        <button id="navBtnHistory" onclick="switchMainTab('history')" 
+                class="flex flex-col items-center justify-center space-y-0.5 text-slate-400 hover:text-slate-200 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          <span class="text-[10px] font-bold">History</span>
+        </button>
+
+        <!-- Tab 3: Settings Button -->
+        <button id="navBtnSettings" onclick="switchMainTab('settings')" 
+                class="flex flex-col items-center justify-center space-y-0.5 text-slate-400 hover:text-slate-200 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          <span class="text-[10px] font-bold">Settings</span>
+        </button>
+
+      </div>
+    </nav>
+
+    <!-- =========================================================================
+         SLIDE-OUT SIDEBAR DRAWER (HAMBURGER MENU)
+         ========================================================================= -->
+    <div id="sidebarBackdrop" onclick="toggleSidebar(false)" 
+         class="hidden fixed inset-0 bg-black/70 z-40 backdrop-blur-sm transition-opacity"></div>
+
+    <aside id="sidebarDrawer" 
+           class="fixed top-0 bottom-0 left-0 w-80 max-w-[85vw] bg-industrial-900 border-r border-industrial-800 z-50 transform -translate-x-full transition-transform duration-300 ease-in-out flex flex-col justify-between overflow-y-auto safe-top safe-bottom">
+      
+      <!-- Drawer Top Content -->
+      <div class="p-4 space-y-5">
+        
+        <!-- Header & Close -->
+        <div class="flex items-center justify-between border-b border-industrial-800 pb-3">
+          <div class="flex items-center space-x-2">
+            <div class="w-7 h-7 rounded bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xs">AP</div>
+            <span class="font-bold text-sm text-white">Device Diagnostics</span>
+          </div>
+          <button onclick="toggleSidebar(false)" class="text-slate-400 hover:text-white p-1">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <!-- Controller Specs & Profile Card -->
+        <div class="bg-industrial-950 p-3 rounded-xl border border-industrial-800 space-y-1.5 font-mono text-xs">
+          <div class="text-[10px] uppercase text-slate-500 font-semibold font-sans">Active Controller Profile</div>
+          <div class="flex justify-between text-white font-bold">
+            <span id="drawerModelName">SURYA-50 SMART</span>
+            <span class="text-emerald-400">ONLINE</span>
+          </div>
+          <div class="text-[11px] text-slate-400 flex justify-between">
+            <span>Rated Current:</span>
+            <span id="drawerRatedAmps" class="text-slate-200">50 Amps MPPT</span>
+          </div>
+          <div class="text-[11px] text-slate-400 flex justify-between">
+            <span>System Voltage:</span>
+            <span id="drawerSysVoltage" class="text-slate-200">12V / 24V Auto</span>
+          </div>
+          <div class="text-[11px] text-slate-400 flex justify-between">
+            <span>Firmware:</span>
+            <span class="text-cyan-400">v2.4.1 (dsPIC33EP)</span>
+          </div>
+        </div>
+
+        <!-- Hardware Connection Setup -->
+        <div class="space-y-2">
+          <label class="block text-xs font-semibold text-slate-300">Controller connection</label>
+          <button onclick="discoverSuryaController()" class="w-full bg-cyan-600 hover:bg-cyan-500 text-industrial-950 font-bold px-3 py-2 rounded text-xs">Discover controller automatically</button>
+          <div class="flex space-x-1.5 mt-2">
+            <input id="drawerWsInput" type="text" placeholder="Optional manual endpoint" class="flex-1 bg-industrial-950 border border-industrial-700 rounded px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-400 focus:outline-none">
+            <button onclick="saveAndConnectWs()" class="bg-industrial-700 hover:bg-industrial-600 text-white font-bold px-3 py-1.5 rounded text-xs">Use</button>
+          </div>
+          <input id="drawerPairToken" type="password" autocomplete="off" placeholder="Controller pairing token" class="w-full bg-industrial-950 border border-industrial-700 rounded px-2.5 py-1.5 text-xs text-white font-mono focus:border-cyan-400 focus:outline-none">
+          <p class="text-[10px] text-slate-500">Use the one-time provisioned pairing token. Production deployments must use WSS and Android Keystore-backed token storage.</p>
+        </div>
+
+        <!-- Raw Serial Diagnostic Console Trigger -->
+        <div>
+          <button onclick="toggleSerialModal(true)" 
+                  class="w-full py-2 px-3 rounded-lg bg-industrial-850 hover:bg-industrial-800 border border-industrial-700 text-slate-200 font-mono text-xs flex items-center justify-between">
+            <span class="flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              <span>View Raw UART Traffic</span>
+            </span>
+            <span id="drawerPktBadge" class="text-[10px] bg-industrial-950 px-1.5 py-0.5 rounded text-emerald-400">0 pkts</span>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Drawer Bottom: Discreet Hidden Executive / Dev Tools -->
+      <div class="p-4 border-t border-industrial-800 space-y-3 bg-industrial-950/60">
+        
+        <!-- Discreet App Version Easter Egg (Tap 5 times to reveal Demo Tools) -->
+        <div class="text-center cursor-pointer select-none" onclick="onVersionTap()">
+          <span class="text-[10px] font-mono text-slate-500 hover:text-slate-400">ASHAPOWER Smart Connect v1.0.0</span>
+        </div>
+
+        <!-- Hidden Developer / Executive Demo Section (Initially Hidden) -->
+        <div id="devToolsSection" class="hidden space-y-2.5 pt-2 border-t border-dashed border-industrial-800">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide">Executive Physics Demo</span>
+            <input id="toggleDemoMode" type="checkbox" onchange="onDemoModeToggle(this.checked)" class="accent-amber-400 w-4 h-4 cursor-pointer">
+          </div>
+
+          <div id="demoControlsGroup" class="hidden space-y-2 text-xs">
+            <div>
+              <label class="text-[10px] text-slate-400 block mb-0.5">Simulate Controller Model:</label>
+              <select id="selectDemoModel" onchange="onDemoModelChange(this.value)" class="w-full bg-industrial-900 border border-industrial-700 rounded p-1 text-xs text-white font-mono">
+                <option value="NOVA-30">NOVA-30 (30A 12V/24V)</option>
+                <option value="SURYA-50" selected>SURYA-50 (50A 12V/24V)</option>
+                <option value="NEON-80">NEON-80 (80A 12V-48V)</option>
+              </select>
+            </div>
+
+            <div class="grid grid-cols-2 gap-1.5 pt-1">
+              <button onclick="triggerDemoPsoScan()" class="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold py-1.5 px-2 rounded hover:bg-amber-500/30">
+                Trigger Shade Scan
+              </button>
+              <button onclick="triggerDemoPumpSurge()" class="bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold py-1.5 px-2 rounded hover:bg-cyan-500/30">
+                Simulate 40A Surge
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </aside>
+
+    <!-- =========================================================================
+         TWO-STEP CONFIRMATION MODAL ("Apply to Controller?")
+         ========================================================================= -->
+    <div id="confirmModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+      <div class="bg-industrial-900 border border-industrial-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+        <div class="flex items-center space-x-2 text-amber-400">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          <h3 class="font-bold text-base text-white">Apply SMU Changes?</h3>
+        </div>
+
+        <p class="text-xs text-slate-300">
+          This action transmits calibration commands (<code class="text-amber-300">#CMD</code>) over UART to update the controller EEPROM.
+        </p>
+
+        <div id="confirmModalSummary" class="bg-industrial-950 p-2.5 rounded-lg border border-industrial-800 text-xs font-mono space-y-1 text-slate-300">
+          <!-- Dynamic summary populated before open -->
+        </div>
+
+        <div class="flex items-center justify-end space-x-2 pt-2 border-t border-industrial-800">
+          <button onclick="closeConfirmationModal()" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white">Cancel</button>
+          <button id="btnConfirmSend" onclick="executePendingCommandsWithAck()" 
+                  class="bg-amber-500 hover:bg-amber-400 text-industrial-950 font-black px-4 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-md">
+            <span>Confirm & Transmit</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =========================================================================
+         RAW SERIAL DIAGNOSTIC LOG MODAL
+         ========================================================================= -->
+    <div id="serialModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+      <div class="bg-industrial-900 border border-industrial-700 rounded-2xl max-w-2xl w-full p-4 space-y-3 shadow-2xl flex flex-col h-[75vh]">
+        
+        <div class="flex items-center justify-between border-b border-industrial-800 pb-2">
+          <div class="flex items-center space-x-2 font-mono text-xs text-cyan-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+            <span>Live UART / WebSocket Diagnostic Stream</span>
+          </div>
+          <div class="flex items-center space-x-2 text-xs">
+            <button onclick="clearDiagnosticLog()" class="text-slate-400 hover:text-rose-400 text-[11px]">Clear</button>
+            <button onclick="toggleSerialModal(false)" class="text-slate-400 hover:text-white font-bold p-1">✕</button>
+          </div>
+        </div>
+
+        <div id="diagnosticTerminalBody" class="flex-1 bg-black/60 rounded border border-industrial-800 p-2.5 font-mono text-xs overflow-y-auto space-y-1">
+          <div class="text-slate-500">// Diagnostic stream initialized. Valid frames starting with '$' or '#' will appear below.</div>
+        </div>
+
+        <div class="flex items-center space-x-2 pt-2 border-t border-industrial-800">
+          <span class="text-xs font-mono font-bold text-slate-500">TX:</span>
+          <input id="inputManualCmd" type="text" value="#CMD,PSO_SWEEP,1*" placeholder="#CMD,PARAM,VALUE*" 
+                 onkeydown="if(event.key==='Enter') sendManualCommandFromInput()"
+                 class="flex-1 bg-industrial-950 border border-industrial-700 px-2 py-1 rounded text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-400">
+          <button onclick="sendManualCommandFromInput()" class="bg-amber-500 text-industrial-950 font-bold px-3 py-1 rounded text-xs">Send</button>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- =========================================================================
+       PRODUCTION JAVASCRIPT SYSTEM ENGINE
+       ========================================================================= -->
+  <script>
+    /* =========================================================================
+     * 1. GLOBAL ERROR BOUNDARY & FAIL-SAFE PROTECTION
+     * ========================================================================= */
+    window.onerror = function(message, source, lineno, colno, error) {
+      console.error("[CRITICAL ERROR]", message, source, lineno, error);
+      logDiagnostic(`[CRASH GUARD] ${message} (${lineno}:${colno})`, 'text-rose-400');
+      return true; // Prevents white-screen crash
+    };
+
+    window.onunhandledrejection = function(event) {
+      console.warn("[UNHANDLED PROMISE]", event.reason);
+      logDiagnostic(`[PROMISE REJECTION] ${event.reason?.message || event.reason}`, 'text-amber-400');
+    };
+
+    /* =========================================================================
+     * 2. INDEXEDDB PERSISTENT DATA LAYER (90-DAY RETENTION & FALLBACK)
+     * ========================================================================= */
+    const DB_NAME = "AshaPowerSMU";
+    const DB_VERSION = 1;
+    let dbInstance = null;
+
+    async function initIndexedDB() {
+      if (!window.indexedDB) {
+        logDiagnostic("[STORAGE] IndexedDB not available. Using localStorage fallback.", "text-amber-400");
+        return;
+      }
+      return new Promise((resolve) => {
+        try {
+          const request = indexedDB.open(DB_NAME, DB_VERSION);
+          request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains("telemetry_snapshots")) {
+              const snapStore = db.createObjectStore("telemetry_snapshots", { keyPath: "id", autoIncrement: true });
+              snapStore.createIndex("timestamp", "timestamp", { unique: false });
+            }
+            if (!db.objectStoreNames.contains("daily_summaries")) {
+              db.createObjectStore("daily_summaries", { keyPath: "date" });
+            }
+          };
+          request.onsuccess = (e) => {
+            dbInstance = e.target.result;
+            pruneOldSnapshots(90); // Auto-prune records older than 90 days
+            loadRecentHistory();
+            resolve(dbInstance);
+          };
+          request.onerror = (e) => {
+            logDiagnostic("[STORAGE ERR] IndexedDB open error: " + e.target.error, "text-rose-400");
+            resolve(null);
+          };
+        } catch (err) {
+          logDiagnostic("[STORAGE EXC] " + err.message, "text-rose-400");
+          resolve(null);
+        }
+      });
+    }
+
+    function saveSnapshotToDb(snap) {
+      if (!dbInstance) {
+        // LocalStorage fallback
+        try {
+          const existing = JSON.parse(localStorage.getItem("asha_snapshots") || "[]");
+          existing.push(snap);
+          if (existing.length > 50) existing.shift();
+          localStorage.setItem("asha_snapshots", JSON.stringify(existing));
+        } catch(e) {}
+        return;
+      }
+      try {
+        const tx = dbInstance.transaction(["telemetry_snapshots"], "readwrite");
+        tx.objectStore("telemetry_snapshots").add(snap);
+      } catch (err) {
+        console.error("DB Write Error:", err);
+      }
+    }
+
+    function pruneOldSnapshots(daysToKeep) {
+      if (!dbInstance) return;
+      try {
+        const cutoff = Date.now() - (daysToKeep * 24 * 60 * 60 * 1000);
+        const tx = dbInstance.transaction(["telemetry_snapshots"], "readwrite");
+        const store = tx.objectStore("telemetry_snapshots");
+        const index = store.index("timestamp");
+        const range = IDBKeyRange.upperBound(cutoff);
+        const request = index.openCursor(range);
+        request.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          }
+        };
+      } catch(e) {}
+    }
+
+    /* =========================================================================
+     * 3. PRODUCTION STATE & DEFAULTS
+     * ========================================================================= */
+    const STATE_NAMES = {
+      0: { name: 'FAULT', color: 'rose' },
+      1: { name: 'PSO_GLOBAL_SWEEP', color: 'violet' },
+      2: { name: 'MPPT_BULK', color: 'amber' },
+      3: { name: 'ABSORB_CV', color: 'cyan' },
+      4: { name: 'FLOAT', color: 'emerald' }
+    };
+
+    const sys = {
+      // Navigation
+      activeTab: 'home',
+      
+      // Transport
+      ws: null,
+      wsUrl: localStorage.getItem('asha_ws_url') || '',
+      connectionToastShown: false,
+      isConnected: false,
+      hasValidTelemetry: false,
+      reconnectAttempts: 0,
+      reconnectTimer: null,
+      lastRxTimestamp: 0,
+      recentPacketsCount: 0,
+      totalPacketCount: 0,
+
+      // Live Telemetry (Current Packet State)
+      Vpv: 0.0,
+      Ipv: 0.0,
+      Ppv: 0,
+      Vbatt: null,
+      VbattComp: null,
+      BattSoc: null,
+      Ibatt: 0.0,
+      Duty: null,
+      State: null,
+      GridStatus: null,
+      KwhGen: null,
+      KwhCons: null,
+      FaultCode: 0,
+      PvToLoad: 0,
+      GridSavingsRs: 0,
+
+      // Pending Controller Settings (for confirmation & ACK rollback)
+      settings: {
+        battType: parseInt(localStorage.getItem('asha_batt_type') || '0'),
+        maxAmps: parseInt(localStorage.getItem('asha_max_amps') || '45'),
+        lvdCut: parseFloat(localStorage.getItem('asha_lvd_cut') || '11.2'),
+        reconnectCut: parseFloat(localStorage.getItem('asha_reconnect_cut') || '12.5'),
+        irCompEnabled: localStorage.getItem('asha_ir_comp') !== 'false',
+        rInt_mOhm: parseInt(localStorage.getItem('asha_rint') || '15'),
+        gridForce: false
+      },
+      confirmedSettings: {},
+
+      // Rolling 60-point Ring Buffer for Chart.js
+      liveChartData: {
+        timestamps: [],
+        watts: [],
+        volts: []
+      },
+
+      // Historical Data Range
+      historyDays: 30,
+
+      // Hidden Developer / Demo Mode
+      demoModeActive: false,
+      demoVersionTaps: 0,
+      demoTimer: null,
+      demoModel: 'SURYA-50'
+    };
+
+    // Deep copy settings into confirmed
+    sys.confirmedSettings = JSON.parse(JSON.stringify(sys.settings));
+
+    let homeChart = null;
+    let historyChart = null;
+
+    /* =========================================================================
+     * 4. UNIVERSAL WEBSOCKET TRANSPORT WITH EXPONENTIAL BACKOFF WATCHDOG
+     * ========================================================================= */
+    function discoverSuryaController() {
+      setConnectionStatus("DISCOVERING…", "bg-cyan-500", "text-cyan-300");
+      if (window.AndroidSurya && AndroidSurya.discoverController) { AndroidSurya.discoverController(); }
+      else { showToast("Automatic discovery is available in the Android app on the same Wi-Fi network.", "info"); }
+    }
+    window.onNativeDiscoveryResult = (url, error) => {
+      if (error || !url) { setConnectionStatus("NOT FOUND", "bg-rose-500", "text-rose-400"); showToast(error || "No SURYA controller found", "error"); return; }
+      sys.wsUrl = url; localStorage.setItem('asha_ws_url', url);
+      const input=document.getElementById('drawerWsInput'); if(input) input.value=url;
+      showToast("Controller discovered. Verifying telemetry…", "success"); connectWebSocket();
+    };
+
+    function connectWebSocket() {
+      if (!sys.wsUrl) { setConnectionStatus("NOT CONNECTED", "bg-slate-500", "text-slate-400"); return; }
+      if (sys.ws) {
+        const previousSocket = sys.ws;
+        sys.ws = null;
+        previousSocket.onclose = null;
+        previousSocket.onerror = null;
+        try { previousSocket.close(); } catch(e) {}
+      }
+
+      setConnectionStatus("CONNECTING...", "bg-cyan-500", "text-cyan-300");
+      logDiagnostic(`[WS] Attempting connect to ${sys.wsUrl}...`, "text-cyan-400");
+
+      try {
+        const pairToken=localStorage.getItem('asha_pair_token')||'';
+        if(!pairToken){setConnectionStatus('PAIRING REQUIRED','bg-amber-500','text-amber-300');showToast('Enter the controller pairing token in connection settings.','warning');return;}
+        const socketUrl=new URL(sys.wsUrl); socketUrl.searchParams.set('token',pairToken);
+        sys.ws = new WebSocket(socketUrl.toString());
+
+        sys.ws.onopen = () => {
+          sys.isConnected = true;
+          sys.reconnectAttempts = 0;
+          sys.lastRxTimestamp = Date.now();
+          sys.hasValidTelemetry = false;
+          setConnectionStatus("CONNECTED · WAITING FOR DATA", "bg-cyan-500", "text-cyan-300");
+          hideWatchdogBanner();
+          if (!sys.connectionToastShown) { showToast("WebSocket connected; waiting for controller telemetry", "success"); sys.connectionToastShown = true; }
+          logDiagnostic("[WS] Connection established.", "text-emerald-400");
+
+          // Handshake request for device info
+          sys.ws.send("#CMD,GET_INFO,1*");
+          sys.ws.send("#CMD,GET_CONFIG,1*");
+        };
+
+        sys.ws.onmessage = (event) => {
+          handleIncomingRawFrame(event.data);
+        };
+
+        sys.ws.onclose = (event) => {
+          sys.isConnected = false;
+          setConnectionStatus("DISCONNECTED", "bg-slate-500", "text-slate-400");
+          logDiagnostic("[WS] Closed. Scheduling auto-reconnect...", "text-slate-400");
+          scheduleBackoffReconnect();
+        };
+
+        sys.ws.onerror = (err) => {
+          sys.isConnected = false;
+          setConnectionStatus("LINK OFFLINE", "bg-rose-500", "text-rose-400");
+          logDiagnostic("[WS ERR] Failed to connect.", "text-rose-400");
+        };
+      } catch (err) {
+        logDiagnostic(`[WS EXC] ${err.message}`, "text-rose-400");
+        scheduleBackoffReconnect();
+      }
+    }
+
+    function scheduleBackoffReconnect() {
+      if (sys.demoModeActive) return; // Do not spam reconnects in demo mode
+      clearTimeout(sys.reconnectTimer);
+      
+      // Exponential backoff: 1s, 2s, 4s, 8s, max 10s
+      sys.reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, sys.reconnectAttempts - 1), 10000);
+      
+      sys.reconnectTimer = setTimeout(() => {
+        logDiagnostic(`[AUTO-RECONNECT] Attempt #${sys.reconnectAttempts} (${delay}ms)...`, "text-amber-400");
+        connectWebSocket();
+      }, delay);
+    }
+
+    function reconnectWebSocketNow() {
+      clearTimeout(sys.reconnectTimer);
+      sys.reconnectAttempts = 0;
+      connectWebSocket();
+    }
+
+    function toggleQuickConnect() {
+      if (sys.isConnected) {
+        if (sys.ws) sys.ws.close();
+      } else {
+        reconnectWebSocketNow();
+      }
+    }
+
+    function setConnectionStatus(text, dotColor, textColor) {
+      document.getElementById('headerStatusText').textContent = text;
+      document.getElementById('headerStatusText').className = textColor;
+      document.getElementById('headerStatusDot').className = `w-2 h-2 rounded-full ${dotColor}`;
+    }
+
+    /* =========================================================================
+     * 5. STRICT PACKET PARSING & SANITY BOUNDS CHECKING
+     * Protocol format: $Vpv,Ipv,Ppv,Vbatt,VbattComp,Ibatt,Duty,State,GridStatus,KwhGen,KwhCons,FaultCode*
+     * Example: $36.5,12.4,452,12.1,12.7,-35.0,68,2,0,4.85,3.20,0*
+     * ========================================================================= */
+    function handleIncomingRawFrame(rawStr) {
+      if (!rawStr || typeof rawStr !== 'string') return;
+      const str = rawStr.trim();
+      if (str.startsWith('{')) { try { const obj=JSON.parse(str); if(obj.type==='history') { renderServerHistory(obj); return; } if(obj.type==='config' && obj.status==='OK'){sys.controllerConfig=obj.config;sys.confirmedControllerConfig=JSON.parse(JSON.stringify(obj.config));return;} if(obj.type==='config_ack' && obj.status==='OK'){sys.controllerConfig=obj.readback;sys.confirmedControllerConfig=JSON.parse(JSON.stringify(obj.readback));if(pendingCommandsQueue.length) setTimeout(transmitNextPendingCommand,80); else {clearTimeout(ackTimeoutHandle);showToast('Settings verified by controller read-back.','success');const b=document.getElementById('btnSaveAllSettings');if(b){b.disabled=false;b.textContent='Applied & verified';}} return;} return; } catch(e) {} }
+      logDiagnostic(`[RX] ${str}`, 'text-emerald-400');
+
+      // Command ACK Handler
+      if (str.startsWith('@ACK') || str.startsWith('#ACK')) {
+        handleAckResponse(str);
+        return;
+      }
+
+      // Check packet frame markers
+      if (!str.startsWith('$') || !str.endsWith('*')) {
+        return; // drop garbled packet
+      }
+
+      const body = str.substring(1, str.length - 1);
+      const tokens = body.split(',');
+      if (tokens.length < 17) {
+        logDiagnostic(`[PACKET DROP] Invalid token count: ${tokens.length}/12`, 'text-rose-400');
+        return;
+      }
+
+      // Parse and apply strict numerical sanity boundaries
+      const vpv = parseFloat(tokens[0]);
+      const ipv = parseFloat(tokens[1]);
+      const ppv = parseFloat(tokens[2]);
+      const vbatt = parseFloat(tokens[3]);
+      const vbattComp = parseFloat(tokens[4]);
+      const ibatt = parseFloat(tokens[5]);
+      const duty = parseInt(tokens[6]);
+      const state = parseInt(tokens[7]);
+      const grid = parseInt(tokens[8]);
+      const kwhGen = parseFloat(tokens[9]);
+      const kwhCons = parseFloat(tokens[10]);
+      const fault = parseInt(tokens[11]);
+
+      // NaN Guard
+      if ([vpv,ipv,ppv,vbatt,vbattComp,ibatt,duty,state,grid,kwhGen,kwhCons,fault,Number(tokens[16])].some(v => !Number.isFinite(v))) {
+        logDiagnostic("[PACKET DROP] Discarded NaN values", 'text-rose-400');
+        return;
+      }
+
+      // Range Sanity Guard
+      if (vpv < 0 || vpv > 180 || ipv < 0 || ipv > 100 || ppv < 0 || ppv > 2500 || vbatt < 0 || vbatt > 75 || vbattComp < 0 || vbattComp > 80 || ibatt < -60 || ibatt > 60 || duty < 0 || duty > 100 || state < 0 || state > 5 || (grid!==0 && grid!==1) || kwhGen<0 || kwhCons<0 || Number(tokens[16])<0 || Number(tokens[16])>100) {
+        logDiagnostic("[PACKET DROP] Out-of-bounds sanity violation", 'text-rose-400');
+        return;
+      }
+
+      // Valid frame accepted!
+      sys.Vpv = vpv;
+      sys.Ipv = ipv;
+      sys.Ppv = Math.round(ppv);
+      sys.Vbatt = vbatt;
+      sys.VbattComp = vbattComp;
+      sys.Ibatt = ibatt;
+      sys.Duty = duty;
+      sys.State = state;
+      sys.GridStatus = grid;
+      sys.KwhGen = kwhGen;
+      sys.KwhCons = kwhCons;
+      sys.FaultCode = fault;
+      sys.PvToLoad = tokens.length > 12 ? Number(tokens[12]) || 0 : 0;
+      sys.GridSavingsRs = tokens.length > 13 ? Number(tokens[13]) || 0 : 0;
+      sys.BattSoc = tokens.length > 16 && Number.isFinite(Number(tokens[16])) ? Math.max(0, Math.min(100, Number(tokens[16]))) : sys.BattSoc;
+
+      sys.lastRxTimestamp = Date.now();
+      sys.hasValidTelemetry = true;
+      setConnectionStatus("CONNECTED · LIVE", "bg-emerald-400", "text-emerald-300");
+      sys.recentPacketsCount++;
+      sys.totalPacketCount++;
+
+      // Update UI components
+      updateHomeDashboardUi();
+      updateEnergyIntelligence();
+      appendLiveChartPoint(sys.Ppv, sys.VbattComp);
+    }
+
+    // Energy Intelligence uses only validated incoming telemetry. No synthetic fallback values.
+    const eiSamples = [];
+    function updateEnergyIntelligence() {
+      if (!sys.hasValidTelemetry || Date.now()-sys.lastRxTimestamp>7000) {
+        document.getElementById('eiDataState').textContent='STALE / NO DATA';
+        return;
+      }
+      const sample={t:Date.now(),pv:sys.Ppv,vb:sys.Vbatt,ib:sys.Ibatt,gen:sys.KwhGen,cons:sys.KwhCons,grid:sys.GridStatus,fault:sys.FaultCode};
+      eiSamples.push(sample); while(eiSamples.length>60) eiSamples.shift();
+      const n=eiSamples.length, recent=eiSamples.slice(-20);
+      document.getElementById('eiDataState').textContent=`LIVE · ${n} SAMPLES`;
+      document.getElementById('eiQuality').textContent=n>=5?'GOOD':'COLLECTING';
+      document.getElementById('eiBalance').textContent=`${sample.gen.toFixed(2)} / ${sample.cons.toFixed(2)} kWh`; 
+      let forecast='—';
+      if(recent.length>=5){const xs=recent.map((x,i)=>i),meanX=(xs.length-1)/2,meanY=recent.reduce((a,x)=>a+x.pv,0)/xs.length;let num=0,den=0;xs.forEach((x,i)=>{num+=(x-meanX)*(recent[i].pv-meanY);den+=(x-meanX)**2;});const slope=den?num/den:0;forecast=`${Math.max(0,Math.round(sample.pv+slope*50))} W`;}
+      document.getElementById('eiPvForecast').textContent=forecast;
+      const vals=recent.map(x=>x.pv).sort((a,b)=>a-b), med=vals[Math.floor(vals.length/2)]||0, deviations=vals.map(x=>Math.abs(x-med)).sort((a,b)=>a-b), mad=deviations[Math.floor(deviations.length/2)]||0;
+      const score=Math.abs(sample.pv-med)/(1.4826*Math.max(mad,5));
+      document.getElementById('eiAnomaly').textContent=n>=8?score.toFixed(1)+'σ':'LEARNING';
+      const alerts=[];
+      if(sample.fault) alerts.push(`Controller fault code ${sample.fault} is asserted; inspect the controller fault register.`);
+      if(n>=8&&score>3.5) alerts.push(`PV power deviates ${score.toFixed(1)} robust σ from its recent median (${Math.round(med)} W); check irradiance, shading and sensor plausibility.`);
+      if(sample.ib>50) alerts.push(`Measured charge current ${sample.ib.toFixed(1)} A exceeds the SURYA-50 nominal 50 A rating; verify sensor scaling and hardware current limiting.`);
+      document.getElementById('eiAlerts').textContent=alerts.length?alerts.join('  •  '):'No rule-based abnormal condition detected in the current validated sample window.';
+      let advice='Maintain current operating mode; insufficient evidence for a change.';
+      if(sample.pv>0&&sample.pv<100) advice='PV output is low. Inspect shading, soiling and PV wiring before changing operating settings.';
+      else if(sample.gen>sample.cons*1.05) advice='Cumulative generated energy exceeds cumulative consumption. Consider scheduling flexible loads during available solar hours, subject to battery charge limits.';
+      else if(sample.grid===1) advice='Grid bypass is active. Review the event history and battery condition; do not force solar mode while protection conditions persist.';
+      document.getElementById('eiAdvice').textContent=advice;
+    }
+
+    /* =========================================================================
+     * 6. TELEMETRY WATCHDOG (5-SECOND TIMEOUT & VALUE GREYING)
+     * ========================================================================= */
+    setInterval(() => {
+      // Calculate packet Hz
+      document.getElementById('telemetryRxRate').textContent = `${sys.recentPacketsCount.toFixed(1)} Hz`;
+      document.getElementById('drawerPktBadge').textContent = `${sys.totalPacketCount} pkts`;
+      sys.recentPacketsCount = 0;
+
+      if (sys.demoModeActive) return; // Watchdog bypass during manual demo
+
+      const now = Date.now();
+      const deltaMs = now - sys.lastRxTimestamp;
+
+      // If no valid packet in 5 seconds, trigger Watchdog & Grey out stale metrics
+      const grid = document.getElementById('telemetryGrid');
+      const watchdogBanner = document.getElementById('watchdogBanner');
+
+      if (deltaMs > 7000 && sys.lastRxTimestamp > 0) {
+        if (sys.ws && sys.ws.readyState === WebSocket.OPEN) setConnectionStatus("CONNECTED · STALE DATA", "bg-rose-500", "text-rose-400");
+        grid.classList.add('telemetry-stale');
+        watchdogBanner.classList.remove('hidden');
+        document.getElementById('watchdogText').textContent = `Watchdog: Stale Telemetry (${Math.round(deltaMs / 1000)}s ago - Reconnecting)`;
+      } else if (sys.lastRxTimestamp > 0 && deltaMs <= 5000) {
+        grid.classList.remove('telemetry-stale');
+        watchdogBanner.classList.add('hidden');
+      }
+    }, 1000);
+
+    function hideWatchdogBanner() {
+      document.getElementById('watchdogBanner').classList.add('hidden');
+      document.getElementById('telemetryGrid').classList.remove('telemetry-stale');
+    }
+
+    /* =========================================================================
+     * 7. HOME DASHBOARD UI UPDATES
+     * ========================================================================= */
+    function updateHomeDashboardUi() {
+      // Stage & Grid Badges
+      const st = STATE_NAMES[sys.State] || STATE_NAMES[2];
+      document.getElementById('badgeActiveStage').textContent = st.name;
+      document.getElementById('svgSmuState').textContent = st.name;
+
+      const gridBadge = document.getElementById('badgeActiveGrid');
+      const svgGridCircle = document.getElementById('svgGridCircle');
+      const svgGridText = document.getElementById('svgGridText');
+      const svgWireGrid = document.getElementById('svgWireGrid');
+
+      if (sys.GridStatus === 1) {
+        gridBadge.textContent = 'GRID BYPASS (ACTIVE)';
+        gridBadge.className = 'text-rose-400 font-semibold';
+        svgGridCircle.setAttribute('fill', '#EF4444');
+        svgGridText.textContent = 'GRID: BYPASS ENGAGED';
+        svgWireGrid.setAttribute('class', 'flow-active opacity-100');
+      } else {
+        gridBadge.textContent = 'SOLAR PRIORITY';
+        gridBadge.className = 'text-emerald-400 font-semibold';
+        svgGridCircle.setAttribute('fill', '#10B981');
+        svgGridText.textContent = 'GRID: ISOLATED';
+        svgWireGrid.setAttribute('class', 'opacity-10');
+      }
+
+      // KPI Numbers
+      document.getElementById('valSolarWatts').textContent = sys.Ppv;
+      document.getElementById('valPvVolts').textContent = sys.Vpv.toFixed(1);
+      document.getElementById('valPvAmps').textContent = sys.Ipv.toFixed(1);
+
+      document.getElementById('valBattComp').textContent = sys.VbattComp.toFixed(2);
+      document.getElementById('valBattMeas').textContent = sys.Vbatt.toFixed(2);
+      document.getElementById('valDeltaV').textContent = Math.abs(sys.VbattComp - sys.Vbatt).toFixed(2);
+
+      const absIbatt = Math.abs(sys.Ibatt);
+      document.getElementById('valBattAmps').textContent = absIbatt.toFixed(1);
+      
+      const dirEl = document.getElementById('valBattDirection');
+      if (sys.Ibatt < -0.5) {
+        dirEl.textContent = 'Charging';
+        dirEl.className = 'text-emerald-400 font-bold';
+      } else if (sys.Ibatt > 0.5) {
+        dirEl.textContent = 'Discharging';
+        dirEl.className = 'text-amber-400 font-bold';
+      } else {
+        dirEl.textContent = 'Float Standby';
+        dirEl.className = 'text-slate-400';
+      }
+
+      // State of Charge calculation
+      const soc = Math.round(Math.max(0, Math.min(100, sys.BattSoc)));
+      document.getElementById('valBattSoc').textContent = soc;
+      document.getElementById('barBattSoc').style.width = `${soc}%`;
+
+      document.getElementById('valKwhGen').textContent = sys.KwhGen.toFixed(2);
+      document.getElementById('valKwhCons').textContent = sys.KwhCons.toFixed(2);
+      const pvLoadEl=document.getElementById('valPvToLoad'); if(pvLoadEl) pvLoadEl.textContent=Math.round(sys.PvToLoad || 0);
+      const saveEl=document.getElementById('valGridSavings'); if(saveEl) saveEl.textContent=(sys.GridSavingsRs || 0).toFixed(2);
+      document.getElementById('valNetSurplus').textContent = `${(sys.KwhGen - sys.KwhCons >= 0 ? '+' : '')}${(sys.KwhGen - sys.KwhCons).toFixed(2)} kWh`;
+      document.getElementById('telemetryPwmDuty').textContent = `${sys.Duty}%`;
+
+      // SVG Schematic Nodes
+      document.getElementById('svgPvW').textContent = `${sys.Ppv} W`;
+      document.getElementById('svgPvVI').textContent = `${sys.Vpv.toFixed(1)}V ${sys.Ipv.toFixed(1)}A`;
+      document.getElementById('svgSmuDuty').textContent = `PWM: ${sys.Duty}%`;
+      document.getElementById('svgBattV').textContent = `${sys.VbattComp.toFixed(2)} V`;
+      document.getElementById('svgBattI').textContent = `${sys.Ibatt < 0 ? '+' : '-'}${absIbatt.toFixed(1)} A`;
+      
+      const loadEstimate = Math.max(0, Math.round(sys.Ppv - (absIbatt * sys.VbattComp)));
+      document.getElementById('svgLoadW').textContent = `${loadEstimate > 0 ? loadEstimate : 220} W`;
+
+      // Active wire glow
+      const wirePv = document.getElementById('svgWirePv');
+      const wireBatt = document.getElementById('svgWireBatt');
+      if (sys.Ppv > 15) {
+        wirePv.setAttribute('class', 'flow-fast opacity-100');
+        wireBatt.setAttribute('class', 'flow-fast opacity-100');
+        document.getElementById('flowActivityBadge').textContent = `Harvesting ${sys.Ppv}W @ ${sys.Duty}% PWM`;
+      } else {
+        wirePv.setAttribute('class', 'opacity-20');
+        wireBatt.setAttribute('class', 'opacity-20');
+        document.getElementById('flowActivityBadge').textContent = 'Solar Standby';
+      }
+
+      document.getElementById('headerSyncTime').textContent = new Date().toTimeString().split(' ')[0];
+    }
+
+    /* =========================================================================
+     * 8. MEMORY-CAPPED CHART.JS RING BUFFER (MAX 60 POINTS)
+     * ========================================================================= */
+    function initHomeChart() {
+      const ctx = document.getElementById('homeLiveChart').getContext('2d');
+      homeChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: sys.liveChartData.timestamps,
+          datasets: [
+            {
+              label: 'Solar Watts (W)',
+              data: sys.liveChartData.watts,
+              borderColor: '#F59E0B',
+              backgroundColor: 'rgba(245, 158, 11, 0.1)',
+              borderWidth: 2,
+              pointRadius: 0,
+              fill: true,
+              tension: 0.2,
+              yAxisID: 'y'
+            },
+            {
+              label: 'Battery V',
+              data: sys.liveChartData.volts,
+              borderColor: '#10B981',
+              borderWidth: 1.5,
+              pointRadius: 0,
+              fill: false,
+              tension: 0.2,
+              yAxisID: 'y1'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              labels: { color: '#94A3B8', font: { size: 9, family: 'monospace' }, boxWidth: 10 }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(30, 41, 59, 0.4)' },
+              ticks: { color: '#64748B', font: { size: 9, family: 'monospace' }, maxTicksLimit: 6 }
+            },
+            y: {
+              position: 'left',
+              min: 0,
+              suggestedMax: 1000,
+              grid: { color: 'rgba(30, 41, 59, 0.4)' },
+              ticks: { color: '#F59E0B', font: { size: 9, family: 'monospace' } }
+            },
+            y1: {
+              position: 'right',
+              min: 10,
+              max: 16,
+              grid: { drawOnChartArea: false },
+              ticks: { color: '#10B981', font: { size: 9, family: 'monospace' } }
+            }
+          }
+        }
+      });
+    }
+
+    function appendLiveChartPoint(w, v) {
+      if (!homeChart) return;
+      const t = new Date().toTimeString().split(' ')[0].substring(3);
+      
+      sys.liveChartData.timestamps.push(t);
+      sys.liveChartData.watts.push(w);
+      sys.liveChartData.volts.push(v);
+
+      // Strict memory cap: discard older than 60 points
+      if (sys.liveChartData.timestamps.length > 60) {
+        sys.liveChartData.timestamps.shift();
+        sys.liveChartData.watts.shift();
+        sys.liveChartData.volts.shift();
+      }
+
+      homeChart.update();
+    }
+
+    /* =========================================================================
+     * 9. LOCAL FALLBACK SNAPSHOT RECORDER (SERVER HISTORY IS AUTHORITATIVE)
+     * ========================================================================= */
+    // Local snapshot fallback intentionally disabled: server-side controller history is authoritative.
+
+    /* =========================================================================
+     * 10. HISTORY TAB & CHART (INDEXEDDB READS, BAR CHART & CSV EXPORT)
+     * ========================================================================= */
+    function initHistoryBarChart() {
+      const ctx = document.getElementById('historyBarChart').getContext('2d');
+      historyChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: 'Solar Generated (kWh)',
+              data: [],
+              backgroundColor: '#F59E0B',
+              borderRadius: 4
+            },
+            {
+              label: 'Home Consumed (kWh)',
+              data: [],
+              backgroundColor: '#8B5CF6',
+              borderRadius: 4
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              grid: { color: 'rgba(30, 41, 59, 0.4)' },
+              ticks: { color: '#94A3B8', font: { size: 10, family: 'monospace' } }
+            },
+            y: {
+              min: 0,
+              grid: { color: 'rgba(30, 41, 59, 0.4)' },
+              ticks: { color: '#F59E0B', font: { size: 10, family: 'monospace' } }
+            }
+          }
+        }
+      });
+    }
+
+    function switchHistoryRange(days) {
+      sys.historyDays = days;
+      document.getElementById('btnHistory7d').className = days === 7 
+        ? 'px-2.5 py-1 rounded font-bold bg-industrial-700 text-amber-300' 
+        : 'px-2.5 py-1 rounded font-bold text-slate-400 hover:text-white';
+      document.getElementById('btnHistory30d').className = days === 30 
+        ? 'px-2.5 py-1 rounded font-bold bg-industrial-700 text-amber-300' 
+        : 'px-2.5 py-1 rounded font-bold text-slate-400 hover:text-white';
+      document.getElementById('historyBarSubtext').textContent = `Showing last ${days} days`;
+
+      loadRecentHistory();
+    }
+
+    function renderServerHistory(records) {
+      const rows = Array.isArray(records) ? records : [];
+      document.getElementById('historyRecordCount').textContent = `${rows.length} server records`;
+      const tbody = document.getElementById('historyTableBody'); tbody.innerHTML = '';
+      rows.slice(-30).reverse().forEach(r => {
+        const tr = document.createElement('tr'); tr.className = 'border-b border-industrial-800/40';
+        const cells = [new Date(r.timestamp * 1000).toLocaleString(), Number(r.pv_power).toFixed(1), `${Number(r.pv_voltage).toFixed(1)}V / ${Number(r.pv_current).toFixed(2)}A`, `${Number(r.battery_voltage).toFixed(2)}V`, `${Number(r.battery_current).toFixed(2)}A`, Number(r.generation_kwh).toFixed(3), Number(r.load_kwh).toFixed(3)];
+        cells.forEach(v => { const td=document.createElement('td'); td.className='py-1.5 px-2.5'; td.textContent=v; tr.appendChild(td); }); tbody.appendChild(tr);
+      });
+      if (historyChart) { historyChart.data.labels = rows.map(r => new Date(r.timestamp*1000).toLocaleDateString()); historyChart.data.datasets[0].data = rows.map(r => Number(r.generation_kwh)); historyChart.data.datasets[1].data = rows.map(r => Number(r.load_kwh)); historyChart.update(); }
+      if (!rows.length) document.getElementById('historyBarSubtext').textContent = 'No server history recorded yet';
+    }
+
+    function loadRecentHistory() {
+      if (sys.ws && sys.ws.readyState === WebSocket.OPEN) { sys.ws.send(`#CMD,GET_HISTORY,${sys.historyDays}*`); }
+      else { renderServerHistory([]); }
+    }
+
+    function exportHistoryCsv() {
+      if (!dbInstance) {
+        showToast("Storage engine offline. Connect to log records first.", "error");
+        return;
+      }
+      const tx = dbInstance.transaction(["telemetry_snapshots"], "readonly");
+      tx.objectStore("telemetry_snapshots").getAll().onsuccess = (e) => {
+        const rows = e.target.result || [];
+        if (rows.length === 0) {
+          showToast("No historical snapshots found in database.", "warning");
+          return;
+        }
+
+        let csv = "Timestamp,Date,Time,SolarWatts,PV_Voltage,PV_Current,Battery_Voltage_Comp,Battery_Voltage_Meas,Battery_Amps,Duty_Percent,Gen_kWh,Cons_kWh\n";
+        rows.forEach(r => {
+          csv += `${r.timestamp},${r.dateStr || ''},${r.timeStr || ''},${r.ppv},${r.vpv},${r.ipv},${r.vbattComp},${r.vbatt},${r.ibatt},${r.duty},${r.kwhGen},${r.kwhCons}\n`;
+        });
+
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `ASHAPOWER_SMU_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("CSV report exported successfully", "success");
+      };
+    }
+
+    /* =========================================================================
+     * 11. SETTINGS TAB: DEBOUNCED INPUTS & CONFIRMATION MODAL
+     * ========================================================================= */
+    let debounceTimer = null;
+
+    function onBatteryChemistryChanged(val) {
+      sys.settings.battType = parseInt(val);
+      const notice = document.getElementById('cfgEqNotice');
+      if (val === '1') { // LiFePO4
+        notice.innerHTML = `<span class="text-amber-400 font-semibold">• Equalization Disabled:</span> High voltage desulfation is automatically locked out for LiFePO4 cells to prevent BMS overvoltage trip.`;
+      } else {
+        notice.innerHTML = `<span class="text-emerald-400 font-semibold">• Equalization Allowed:</span> Periodic 15.2V desulfation enabled for tubular cells.`;
+      }
+    }
+
+    function onMaxAmpsSliderInput(val) {
+      document.getElementById('dispCfgMaxAmps').textContent = `${val} A`;
+      sys.settings.maxAmps = parseInt(val);
+    }
+
+    function onLvdSliderInput(val) {
+      document.getElementById('dispCfgLvd').textContent = `${parseFloat(val).toFixed(1)} V`;
+      sys.settings.lvdCut = parseFloat(val);
+    }
+
+    function onReconnectSliderInput(val) {
+      document.getElementById('dispCfgReconnect').textContent = `${parseFloat(val).toFixed(1)} V`;
+      sys.settings.reconnectCut = parseFloat(val);
+    }
+
+    function onIrCompToggle(checked) {
+      sys.settings.irCompEnabled = checked;
+    }
+
+    function onRintSliderInput(val) {
+      document.getElementById('dispCfgRint').textContent = `${val} mΩ`;
+      sys.settings.rInt_mOhm = parseInt(val);
+    }
+
+    function toggleManualGridForce() {
+      sys.settings.gridForce = !sys.settings.gridForce;
+      const btn = document.getElementById('btnCfgGridForce');
+      if (sys.settings.gridForce) {
+        btn.textContent = 'FORCED GRID BYPASS';
+        btn.className = 'px-3 py-1 rounded text-xs font-bold bg-rose-600 text-white border border-rose-500';
+      } else {
+        btn.textContent = 'Auto Solar';
+        btn.className = 'px-3 py-1 rounded text-xs font-bold bg-industrial-950 border border-industrial-700 text-slate-300';
+      }
+    }
+
+    function openConfirmationModal() {
+      const modal = document.getElementById('confirmModal');
+      const summary = document.getElementById('confirmModalSummary');
+      
+      const bName = ["Tubular Lead-Acid", "LiFePO4 Lithium", "SMF / AGM"][sys.settings.battType] || "Tubular";
+      summary.innerHTML = `
+        <div>• Battery Profile: <span class="text-white">${bName}</span></div>
+        <div>• Max Charge Current: <span class="text-amber-400">${sys.settings.maxAmps} A</span></div>
+        <div>• LVD Cutoff Voltage: <span class="text-rose-400">${sys.settings.lvdCut.toFixed(1)} V</span></div>
+        <div>• Reconnect Voltage: <span class="text-emerald-400">${sys.settings.reconnectCut.toFixed(1)} V</span></div>
+        <div>• Dynamic IR Drop Comp: <span class="text-cyan-400">${sys.settings.irCompEnabled ? 'ENABLED (' + sys.settings.rInt_mOhm + 'mΩ)' : 'DISABLED'}</span></div>
+      `;
+
+      modal.classList.remove('hidden');
+    }
+
+    function closeConfirmationModal() {
+      document.getElementById('confirmModal').classList.add('hidden');
+    }
+
+    /* =========================================================================
+     * 12. COMMAND ACK + TIMEOUT ROLLBACK (OPTIMISTIC UI PROTECTION)
+     * ========================================================================= */
+    let ackTimeoutHandle = null;
+    let pendingCommandsQueue = [];
+
+    function executePendingCommandsWithAck() {
+      closeConfirmationModal();
+      
+      // Build packet list to send
+      pendingCommandsQueue = [
+        `#CMD,SET_CONFIG,solar_to_grid_v,${sys.settings.lvdCut.toFixed(1)}*`,
+        `#CMD,SET_CONFIG,grid_to_solar_v,${sys.settings.reconnectCut.toFixed(1)}*`
+      ];
+
+      // Disable Apply button with spinner
+      const applyBtn = document.getElementById('btnSaveAllSettings');
+      applyBtn.disabled = true;
+      applyBtn.innerHTML = `<span class="w-3.5 h-3.5 border-2 border-industrial-950 border-t-transparent rounded-full animate-spin"></span><span>Awaiting ACK...</span>`;
+
+      // Transmit first packet
+      transmitNextPendingCommand();
+
+      // Start 3000ms ACK watchdog timeout
+      clearTimeout(ackTimeoutHandle);
+      ackTimeoutHandle = setTimeout(() => {
+        // TIMEOUT ROLLBACK TRIGGERED!
+        rollbackSettingsToConfirmed("Controller did not respond within 3000ms. Settings rolled back.");
+      }, 3000);
+    }
+
+    function transmitNextPendingCommand() {
+      if (pendingCommandsQueue.length === 0) return;
+      const cmd = pendingCommandsQueue.shift();
+      sendHardwarePacket(cmd);
+    }
+
+    function handleAckResponse(ackStr) {
+      logDiagnostic(`[ACK RECEIVED] ${ackStr}`, 'text-emerald-400');
+      
+      if (pendingCommandsQueue.length > 0) {
+        // Send next queued command
+        setTimeout(transmitNextPendingCommand, 80);
+      } else {
+        // All commands ACKed successfully!
+        clearTimeout(ackTimeoutHandle);
+        sys.confirmedSettings = JSON.parse(JSON.stringify(sys.settings));
+        
+        // Save to localStorage
+        localStorage.setItem('asha_batt_type', sys.settings.battType);
+        localStorage.setItem('asha_max_amps', sys.settings.maxAmps);
+        localStorage.setItem('asha_lvd_cut', sys.settings.lvdCut);
+        localStorage.setItem('asha_reconnect_cut', sys.settings.reconnectCut);
+        localStorage.setItem('asha_ir_comp', sys.settings.irCompEnabled);
+        localStorage.setItem('asha_rint', sys.settings.rInt_mOhm);
+
+        const applyBtn = document.getElementById('btnSaveAllSettings');
+        applyBtn.disabled = false;
+        applyBtn.innerHTML = `<span>Applied to Controller</span>`;
+        showToast("Grid thresholds acknowledged. Controller read-back is required to verify applied values.", "info");
+      }
+    }
+
+    function rollbackSettingsToConfirmed(reason) {
+      logDiagnostic(`[ACK TIMEOUT ROLLBACK] ${reason}`, 'text-rose-400');
+      
+      // Revert in-memory settings to confirmed
+      sys.settings = JSON.parse(JSON.stringify(sys.confirmedSettings));
+      
+      // Reset UI elements to confirmed
+      document.getElementById('cfgBattType').value = sys.settings.battType;
+      document.getElementById('sliderCfgMaxAmps').value = sys.settings.maxAmps;
+      document.getElementById('dispCfgMaxAmps').textContent = `${sys.settings.maxAmps} A`;
+      document.getElementById('sliderCfgLvd').value = sys.settings.lvdCut;
+      document.getElementById('dispCfgLvd').textContent = `${sys.settings.lvdCut.toFixed(1)} V`;
+      document.getElementById('sliderCfgReconnect').value = sys.settings.reconnectCut;
+      document.getElementById('dispCfgReconnect').textContent = `${sys.settings.reconnectCut.toFixed(1)} V`;
+      document.getElementById('toggleCfgIrComp').checked = sys.settings.irCompEnabled;
+      document.getElementById('sliderCfgRint').value = sys.settings.rInt_mOhm;
+      document.getElementById('dispCfgRint').textContent = `${sys.settings.rInt_mOhm} mΩ`;
+
+      const applyBtn = document.getElementById('btnSaveAllSettings');
+      applyBtn.disabled = false;
+      applyBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span>Apply to Controller</span>`;
+
+      showToast(reason, "error");
+    }
+
+    function sendHardwarePacket(pkt) {
+      logDiagnostic(`[TX] ${pkt}`, 'text-cyan-400');
+      if (sys.ws && sys.ws.readyState === WebSocket.OPEN) {
+        sys.ws.send(pkt);
+      } else if (sys.demoModeActive) {
+        // In demo mode, simulate controller ACK after 150ms
+        setTimeout(() => handleAckResponse("@ACK,CMD_OK*"), 150);
+      } else {
+        logDiagnostic("[TX WARNING] Hardware offline. Command discarded.", 'text-amber-400');
+      }
+    }
+
+    /* =========================================================================
+     * 13. NAVIGATION & DRAWER CONTROLS
+     * ========================================================================= */
+    function switchMainTab(tab) {
+      sys.activeTab = tab;
+      
+      document.getElementById('tabContentHome').classList.toggle('hidden', tab !== 'home');
+      document.getElementById('tabContentHistory').classList.toggle('hidden', tab !== 'history');
+      document.getElementById('tabContentSettings').classList.toggle('hidden', tab !== 'settings');
+
+      // Update Nav Buttons
+      const navBtns = { home: 'navBtnHome', history: 'navBtnHistory', settings: 'navBtnSettings' };
+      Object.keys(navBtns).forEach(k => {
+        const el = document.getElementById(navBtns[k]);
+        if (k === tab) {
+          el.className = 'flex flex-col items-center justify-center space-y-0.5 text-amber-400 transition-colors';
+        } else {
+          el.className = 'flex flex-col items-center justify-center space-y-0.5 text-slate-400 hover:text-slate-200 transition-colors';
+        }
+      });
+
+      if (tab === 'history') {
+        loadRecentHistory();
+      }
+    }
+
+    function toggleSidebar(open) {
+      const drawer = document.getElementById('sidebarDrawer');
+      const backdrop = document.getElementById('sidebarBackdrop');
+      if (open) {
+        backdrop.classList.remove('hidden');
+        drawer.classList.remove('-translate-x-full');
+      } else {
+        drawer.classList.add('-translate-x-full');
+        backdrop.classList.add('hidden');
+      }
+    }
+
+    function saveAndConnectWs() {
+      const val = document.getElementById('drawerWsInput').value.trim();
+      const token=document.getElementById('drawerPairToken').value.trim();
+      if(!token){showToast('Pairing token is required.','warning');return;}
+      localStorage.setItem('asha_pair_token',token);
+      sys.wsUrl = val;
+      localStorage.setItem('asha_ws_url', val);
+      toggleSidebar(false);
+      connectWebSocket();
+      showToast(`Saved endpoint: ${val}`, "info");
+    }
+
+    /* =========================================================================
+     * 14. DIAGNOSTIC TERMINAL LOGGING
+     * ========================================================================= */
+    function toggleSerialModal(open) {
+      document.getElementById('serialModal').classList.toggle('hidden', !open);
+      toggleSidebar(false);
+    }
+
+    function logDiagnostic(msg, colorClass = 'text-slate-300') {
+      const term = document.getElementById('diagnosticTerminalBody');
+      if (!term) return;
+      const row = document.createElement('div');
+      row.className = `${colorClass} break-all`;
+      row.textContent = `[${new Date().toTimeString().split(' ')[0]}] ${msg}`;
+      term.appendChild(row);
+      term.scrollTop = term.scrollHeight;
+
+      // Keep terminal bounded to 200 lines
+      if (term.childNodes.length > 200) {
+        term.removeChild(term.firstChild);
+      }
+    }
+
+    function clearDiagnosticLog() {
+      document.getElementById('diagnosticTerminalBody').innerHTML = '';
+    }
+
+    function sendManualCommandFromInput() {
+      const inp = document.getElementById('inputManualCmd');
+      const cmd = inp.value.trim();
+      if (!cmd.startsWith('#CMD,') || !cmd.endsWith('*')) {
+        showToast("Invalid format. Must be #CMD,PARAM,VALUE*", "warning");
+        return;
+      }
+      sendHardwarePacket(cmd);
+    }
+
+    /* =========================================================================
+     * 15. TOAST NOTIFICATION UTILITY
+     * ========================================================================= */
+    function showToast(msg, type = "info") {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      
+      let border = "border-cyan-500/40 bg-industrial-900 text-cyan-200";
+      if (type === "success") border = "border-emerald-500/40 bg-industrial-900 text-emerald-200";
+      if (type === "error") border = "border-rose-500/40 bg-industrial-900 text-rose-200";
+      if (type === "warning") border = "border-amber-500/40 bg-industrial-900 text-amber-200";
+
+      toast.className = `p-2.5 rounded-lg border text-xs font-medium shadow-xl flex items-center space-x-2 transition-all transform duration-300 opacity-0 translate-y-2 pointer-events-auto ${border}`;
+      toast.textContent = msg;
+
+      container.appendChild(toast);
+      requestAnimationFrame(() => {
+        toast.classList.remove('opacity-0', 'translate-y-2');
+      });
+
+      setTimeout(() => {
+        toast.classList.add('opacity-0', 'translate-y-2');
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    /* =========================================================================
+     * 16. HIDDEN DEVELOPER & EXECUTIVE DEMO MODE (5-TAP EASTER EGG)
+     * ========================================================================= */
+    function onVersionTap() {
+      sys.demoVersionTaps++;
+      if (sys.demoVersionTaps >= 5) {
+        sys.demoVersionTaps = 0;
+        const devSec = document.getElementById('devToolsSection');
+        devSec.classList.remove('hidden');
+        showToast("Developer / Demo Controls Unlocked", "warning");
+      }
+    }
+
+    function onDemoModeToggle(active) {
+      sys.demoModeActive = active;
+      document.getElementById('demoControlsGroup').classList.toggle('hidden', !active);
+
+      if (active) {
+        if (sys.ws) { try { sys.ws.close(); } catch(e) {} }
+        setConnectionStatus("DEMO ENGINE", "bg-amber-400", "text-amber-300");
+        showToast("Executive Physics Demo Active", "warning");
+        startDemoPhysicsLoop();
+      } else {
+        clearInterval(sys.demoTimer);
+        setConnectionStatus("DISCONNECTED", "bg-slate-500", "text-slate-400");
+        reconnectWebSocketNow();
+      }
+    }
+
+    function onDemoModelChange(model) {
+      sys.demoModel = model;
+      document.getElementById('headerModelBadge').textContent = `${model} (12V/24V)`;
+      document.getElementById('drawerModelName').textContent = `${model} SMART`;
+      showToast(`Model simulated: ${model}`, "info");
+    }
+
+    function triggerDemoPsoScan() {
+      if (!sys.demoModeActive) return;
+      showToast("Triggering 40ms Global MPPT PSO Sweep...", "info");
+      sys.State = 1;
+      setTimeout(() => {
+        sys.State = 2;
+        sys.Ppv = 680;
+        showToast("PSO Sweep Locked: 680W Global Peak", "success");
+      }, 1500);
+    }
+
+    function triggerDemoPumpSurge() {
+      if (!sys.demoModeActive) return;
+      showToast("Simulating 40A Motor Surge (IR Guard Holding Relay)", "warning");
+      sys.Ibatt = 40.0;
+      sys.Vbatt = 11.0;
+      sys.VbattComp = 11.6;
+      setTimeout(() => {
+        sys.Ibatt = -25.0;
+        sys.Vbatt = 12.5;
+        sys.VbattComp = 12.8;
+      }, 4000);
+    }
+
+    function startDemoPhysicsLoop() {
+      clearInterval(sys.demoTimer);
+      let t = 0;
+      sys.demoTimer = setInterval(() => {
+        t++;
+        // Generate realistic non-linear solar curve with natural cloud drifts
+        const baseW = 450 + (Math.sin(t * 0.1) * 60) + (Math.random() * 10 - 5);
+        const vpv = 36.2 + (Math.sin(t * 0.05) * 1.5);
+        const ipv = baseW / vpv;
+        const vbatt = 12.4 + (Math.sin(t * 0.02) * 0.3);
+        const vbattComp = vbatt + (sys.settings.rInt_mOhm * 0.025);
+
+        const pkt = `$${vpv.toFixed(1)},${ipv.toFixed(1)},${Math.round(baseW)},${vbatt.toFixed(2)},${vbattComp.toFixed(2)},-28.5,68,${sys.State},0,${sys.KwhGen.toFixed(2)},${sys.KwhCons.toFixed(2)},0*`;
+        handleIncomingRawFrame(pkt);
+      }, 1000);
+    }
+
+    /* =========================================================================
+     * 17. INITIALIZATION ON WINDOW LOAD
+     * ========================================================================= */
+    window.addEventListener('load', async () => {
+      const pairField=document.getElementById('drawerPairToken'); if(pairField) pairField.value=localStorage.getItem('asha_pair_token')||'';
+      initHomeChart();
+      initHistoryBarChart();
+      await initIndexedDB();
+
+      // Connect to WebSocket by default
+      connectWebSocket();
+    });
+  </script>
+</body>
+</html>

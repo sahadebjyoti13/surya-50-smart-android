@@ -1,0 +1,8 @@
+{
+  "name": "SURYA-50 SMART",
+  "description": "Asha Power SURYA-50 SMART MPPT Solar Management Unit companion app with real-time telemetry, shadow-proof global MPPT control, IR-drop surge guard, and physics simulator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
